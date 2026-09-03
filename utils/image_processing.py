@@ -9,6 +9,13 @@ import numpy as np
 from PIL import Image, ImageEnhance, ImageFilter, UnidentifiedImageError
 
 
+def resize_for_preview(image: Image.Image, max_dimension: int = 900) -> Image.Image:
+    """Return a copy bounded for responsive previews and analysis."""
+    preview = image.copy()
+    preview.thumbnail((max_dimension, max_dimension), Image.Resampling.LANCZOS)
+    return preview
+
+
 def load_image(uploaded_file) -> Image.Image:
     """Load an uploaded file as an independent RGB/RGBA Pillow image."""
     try:
