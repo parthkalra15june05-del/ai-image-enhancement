@@ -2,7 +2,7 @@
 
 **AI-Powered Image Enhancement & Editing Studio**
 
-A university Computer Graphics and Multimedia project built with Python, Streamlit, Pillow, OpenCV, NumPy, and Matplotlib. The first version provides a lightweight image enhancement and editing workflow. AI model features such as background removal are reserved for a later stage.
+A university Computer Graphics and Multimedia project built with Python, Streamlit, Pillow, OpenCV, NumPy, Matplotlib, and rembg. It combines interactive image editing, adaptive enhancement, image analysis, and neural foreground segmentation.
 
 ## Features
 
@@ -12,6 +12,8 @@ A university Computer Graphics and Multimedia project built with Python, Streaml
 - Adjust brightness, contrast, saturation, sharpness, and blur
 - Apply grayscale, sepia, Gaussian blur, edge detection, and cartoon filters
 - Rotate and flip images
+- Apply adaptive restoration and quality recommendations
+- Segment portraits, replace backgrounds, and remove backgrounds with rembg `u2netp`
 - Download the processed image as PNG
 
 ## Setup
@@ -29,6 +31,15 @@ streamlit run app.py
 ```
 
 Open the local URL shown by Streamlit in your browser.
+
+## Deploy on Streamlit Community Cloud
+
+1. Push this project to a GitHub repository.
+2. In Streamlit Community Cloud, create an app from the repository.
+3. Set the entry-point file to `app.py` and select Python 3.10 or 3.11.
+4. Deploy. Community Cloud installs the pinned packages from `requirements.txt` automatically.
+
+No secrets are required. The lightweight `u2netp` weights are downloaded by rembg on the first portrait or background request, so that first request takes longer than later cached requests. Uploaded images are limited to 20 MB to protect the deployment's memory.
 
 ## Project Structure
 

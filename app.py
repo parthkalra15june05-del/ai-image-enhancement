@@ -190,10 +190,10 @@ else:
             image_columns = st.columns(2)
             with image_columns[0]:
                 st.subheader("Original")
-                st.image(preview_image, use_container_width=True)
+                st.image(preview_image, width="stretch")
             with image_columns[1]:
                 st.subheader("Processed")
-                st.image(processed_image, use_container_width=True)
+                st.image(processed_image, width="stretch")
 
             st.subheader("Image information")
             metadata_columns = st.columns(5)
@@ -229,11 +229,11 @@ else:
                 restore_columns = st.columns(2)
                 with restore_columns[0]:
                     st.subheader("Before")
-                    st.image(processed_image, use_container_width=True)
+                    st.image(processed_image, width="stretch")
                     st.caption(f"Original Resolution: {processed_image.width} x {processed_image.height}")
                 with restore_columns[1]:
                     st.subheader("After")
-                    st.image(restored, use_container_width=True)
+                    st.image(restored, width="stretch")
                     st.caption(f"Restored Resolution: {restored.width} x {restored.height}")
                 report_columns = st.columns(2)
                 with report_columns[0]:
@@ -285,10 +285,10 @@ else:
                 before_after = st.columns(2)
                 with before_after[0]:
                     st.caption("Before")
-                    st.image(processed_image, use_container_width=True)
+                    st.image(processed_image, width="stretch")
                 with before_after[1]:
                     st.caption(f"After: {effect_name}")
-                    st.image(result, use_container_width=True)
+                    st.image(result, width="stretch")
                 st.success("AI Subject Segmentation: Completed. Foreground preserved and background processed separately.")
                 st.download_button("Download portrait result", image_to_png_bytes(result), "imageenhance_portrait.png", "image/png", key="download_portrait")
 
@@ -315,7 +315,7 @@ else:
             smart_columns = st.columns(2)
             with smart_columns[0]:
                 st.caption("Current image")
-                st.image(processed_image, use_container_width=True)
+                st.image(processed_image, width="stretch")
             with smart_columns[1]:
                 if st.button("Run Smart Auto Enhance", type="primary", key="smart_enhance_button"):
                     enhanced, improvements = smart_auto_enhance(processed_image)
@@ -323,7 +323,7 @@ else:
                 if "smart_result" in st.session_state:
                     enhanced_image, improvements = st.session_state.smart_result
                     st.caption("Enhanced image")
-                    st.image(enhanced_image, use_container_width=True)
+                    st.image(enhanced_image, width="stretch")
                     st.write("Applied improvements:")
                     for improvement in improvements:
                         st.write(f"- {improvement}")
@@ -352,7 +352,7 @@ else:
             if st.session_state.get("background_error"):
                 st.error(st.session_state.background_error)
             if st.session_state.get("background_result") is not None:
-                st.image(st.session_state.background_result, caption="Transparent result", use_container_width=True)
+                st.image(st.session_state.background_result, caption="Transparent result", width="stretch")
                 st.download_button(
                     "Download background-removed PNG",
                     data=image_to_png_bytes(st.session_state.background_result),
@@ -419,7 +419,7 @@ else:
             rgb_axis.set(xlim=(0, 255), xlabel="Intensity", ylabel="Pixel count")
             rgb_axis.legend()
             rgb_axis.grid(alpha=0.2)
-            st.pyplot(rgb_figure, use_container_width=True)
+            st.pyplot(rgb_figure, width="stretch")
             plt.close(rgb_figure)
 
             st.header("Grayscale Histogram")
@@ -428,9 +428,9 @@ else:
             gray_axis.fill_between(intensity, gray_histogram, color="gray", alpha=0.2)
             gray_axis.set(xlim=(0, 255), xlabel="Intensity", ylabel="Pixel count")
             gray_axis.grid(alpha=0.2)
-            st.pyplot(gray_figure, use_container_width=True)
+            st.pyplot(gray_figure, width="stretch")
             plt.close(gray_figure)
 
             st.header("Color Space Visualization")
             color_space = st.radio("Color space", ["RGB", "HSV", "Grayscale"], horizontal=True)
-            st.image(visualize_color_space(preview_image, color_space), use_container_width=True)
+            st.image(visualize_color_space(preview_image, color_space), width="stretch")
