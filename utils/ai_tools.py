@@ -9,7 +9,7 @@ import cv2
 import numpy as np
 from PIL import Image, ImageEnhance, ImageFilter, ImageOps
 
-from utils.image_processing import apply_processing_option
+from utils.image_processing import apply_processing_option, resize_for_preview
 
 
 def _image_metrics(image: Image.Image) -> dict[str, float]:
@@ -55,6 +55,68 @@ def smart_auto_enhance(image: Image.Image) -> tuple[Image.Image, list[str]]:
     if not applied:
         applied.append("No correction needed")
     return enhanced, applied
+
+
+def _quality_label(metrics: dict[str, float]) -> dict[str, str]:
+    """Convert numeric restore measurements into readable assessment labels."""
+    return {
+        "Brightness": "Low" if metrics["brightness"] < 70 else "High" if metrics["brightness"] > 210 else "Good",
+        "Contrast": "Low" if metrics["contrast"] < 38 else "High" if metrics["contrast"] > 85 else "Good",
+        "Sharpness": "Low" if metrics["sharpness"] < 90 else "Moderate" if metrics["sharpness"] < 300 else "Good",
+        "Resolution": "Low" if metrics["resolution"] < 1_000_000 else "Good",
+    }
+
+
+def image_quality_score(image: Image.Image) -> float:
+    """Return a transparent 0-100 heuristic, not a scientific or neural score."""
+    metrics = _image_metrics(image)
+    brightness_score = max(0.0, 1.0 - abs(metrics["brightness"] - 128) / 128)
+    contrast_score = min(metrics["contrast"] / 64, 1.0)
+    range_score = min(metrics["dynamic_range"] / 220, 1.0)
+    sharpness_score = min(metrics["sharpness"] / 300, 1.0)
+    return round(100 * (0.25 * brightness_score + 0.25 * contrast_score + 0.20 * range_score + 0.30 * sharpness_score), 1)
+
+
+def ai_restore(image: Image.Image, allow_super_resolution: bool = False) -> tuple[Image.Image, dict[str, float], dict[str, float], list[str], list[str]]:
+    """Adaptively restore an image and return before/after metrics and an audit report."""
+    original_metrics = _image_metrics(image)
+    restored = image.convert("RGB").copy()
+    applied: list[str] = []
+    skipped: list[str] = []
+
+    if original_metrics["brightness"] < 70:
+        source = np.asarray(restored)
+        lookup = np.array([((value / 255.0) ** 0.88) * 255 for value in range(256)])
+        restored = Image.fromarray(cv2.LUT(source, lookup.astype(np.uint8)))
+        applied.append("Gamma correction for low brightness")
+    else:
+        skipped.append("Gamma correction - brightness is balanced")
+
+    if original_metrics["contrast"] < 38 or original_metrics["dynamic_range"] < 150:
+        restored = apply_processing_option(restored, "CLAHE Enhancement")
+        applied.append("CLAHE contrast enhancement")
+    else:
+        skipped.append("CLAHE - contrast and dynamic range are sufficient")
+
+    if original_metrics["sharpness"] < 90:
+        sharpened = apply_processing_option(restored, "Convolution Sharpen")
+        restored = Image.blend(restored, sharpened, 0.30)
+        applied.append("Mild convolution sharpening")
+    else:
+        skipped.append("Sharpening - edge detail is already sufficient")
+
+    if original_metrics["sharpness"] < 25 and original_metrics["contrast"] > 25:
+        restored = apply_processing_option(restored, "Gaussian Denoising")
+        applied.append("Mild Gaussian denoising")
+    else:
+        skipped.append("Denoising - no strong noise indicator")
+
+    if allow_super_resolution:
+        skipped.append("Super Resolution - disabled in lightweight demo")
+    else:
+        skipped.append("Super Resolution - disabled in lightweight demo")
+
+    return restored, original_metrics, _image_metrics(restored), applied, skipped
 
 
 def quality_assessment(image: Image.Image) -> dict[str, object]:
@@ -116,15 +178,30 @@ def _image_bytes(image: Image.Image) -> bytes:
     return buffer.getvalue()
 
 
+@lru_cache(maxsize=1)
+def _cached_rembg_session():
+    """Load the lightweight rembg model only when segmentation is requested."""
+    try:
+        from rembg import new_session
+        return new_session("u2netp")
+    except (ImportError, SystemExit) as exc:
+        raise RuntimeError("Portrait tools require rembg with its CPU backend.") from exc
+    except Exception as exc:
+        raise RuntimeError(f"Could not load the rembg u2netp model: {exc}") from exc
+
+
 @lru_cache(maxsize=8)
 def _cached_subject_mask(image_bytes: bytes) -> Image.Image:
     """Run rembg once per image and cache its soft alpha mask."""
     try:
         from rembg import remove
-        result = remove(image_bytes)
-        return Image.open(BytesIO(result)).convert("RGBA").getchannel("A").copy()
+        source = Image.open(BytesIO(image_bytes)).convert("RGB")
+        preview = resize_for_preview(source, max_dimension=768)
+        result = remove(_image_bytes(preview), session=_cached_rembg_session())
+        mask = Image.open(BytesIO(result)).convert("RGBA").getchannel("A")
+        return mask.resize(source.size, Image.Resampling.BILINEAR).copy()
     except (ImportError, SystemExit) as exc:
-        raise RuntimeError("Portrait tools require rembg with its CPU or GPU backend.") from exc
+        raise RuntimeError("Portrait tools require rembg with its CPU backend.") from exc
     except (Exception, SystemExit) as exc:
         raise RuntimeError(f"Subject segmentation failed: {exc}") from exc
 
@@ -138,129 +215,38 @@ def _blend_with_mask(foreground: Image.Image, background: Image.Image, mask: Ima
     return Image.composite(foreground.convert("RGBA"), background.convert("RGBA"), mask).convert("RGBA")
 
 
-def portrait_blur(image: Image.Image) -> tuple[Image.Image, Image.Image]:
+def portrait_blur(image: Image.Image, mask: Image.Image | None = None) -> tuple[Image.Image, Image.Image]:
     """Keep the rembg subject sharp while strongly blurring the background."""
-    mask = get_subject_mask(image)
+    mask = mask if mask is not None else get_subject_mask(image)
     return _blend_with_mask(image, image.convert("RGB").filter(ImageFilter.GaussianBlur(radius=14)), mask), mask
 
 
-def subject_enhance(image: Image.Image) -> tuple[Image.Image, Image.Image]:
+def subject_enhance(image: Image.Image, mask: Image.Image | None = None) -> tuple[Image.Image, Image.Image]:
     """Apply conservative enhancement to the subject only."""
-    mask = get_subject_mask(image)
+    mask = mask if mask is not None else get_subject_mask(image)
     enhanced = ImageEnhance.Sharpness(ImageEnhance.Contrast(ImageEnhance.Brightness(image).enhance(1.08)).enhance(1.10)).enhance(1.25)
     return _blend_with_mask(enhanced, image, mask), mask
 
 
-def subject_pop(image: Image.Image) -> tuple[Image.Image, Image.Image]:
+def subject_pop(image: Image.Image, mask: Image.Image | None = None) -> tuple[Image.Image, Image.Image]:
     """Brighten, sharpen, and saturate the subject against a softened background."""
-    mask = get_subject_mask(image)
+    mask = mask if mask is not None else get_subject_mask(image)
     foreground = ImageEnhance.Sharpness(ImageEnhance.Color(ImageEnhance.Brightness(image).enhance(1.08)).enhance(1.10)).enhance(1.25)
     background = ImageEnhance.Color(ImageEnhance.Brightness(image).enhance(0.92)).enhance(0.88).filter(ImageFilter.GaussianBlur(radius=2.5))
     return _blend_with_mask(foreground, background, mask), mask
 
 
-def replace_background(image: Image.Image, replacement: Image.Image) -> tuple[Image.Image, Image.Image]:
+def replace_background(image: Image.Image, replacement: Image.Image, mask: Image.Image | None = None) -> tuple[Image.Image, Image.Image]:
     """Composite the subject over a cover-cropped replacement background."""
-    mask = get_subject_mask(image)
+    mask = mask if mask is not None else get_subject_mask(image)
     background = ImageOps.fit(replacement.convert("RGB"), image.size, method=Image.Resampling.LANCZOS)
     return _blend_with_mask(image, background, mask), mask
 
 
-def remove_background(image: Image.Image) -> Image.Image:
+def remove_background(image: Image.Image, mask: Image.Image | None = None) -> Image.Image:
     """Remove the background with rembg and return a transparent RGBA image."""
     result = image.convert("RGBA").copy()
-    result.putalpha(get_subject_mask(image))
+    result.putalpha(mask if mask is not None else get_subject_mask(image))
     return result
 
-@lru_cache(maxsize=1)
-def _load_super_resolution_model():
-    """Lazily load the actual pretrained Swin2SR neural network."""
-    try:
-        from transformers import AutoImageProcessor, Swin2SRForImageSuperResolution
-    except ImportError as exc:
-        raise RuntimeError("AI Super Resolution requires torch and transformers.") from exc
-    model_id = "caidas/swin2SR-classical-sr-x2-64"
-    try:
-        processor = AutoImageProcessor.from_pretrained(model_id)
-        model = Swin2SRForImageSuperResolution.from_pretrained(model_id)
-        model.eval()
-        return processor, model
-    except Exception as exc:
-        raise RuntimeError(f"Could not load Swin2SR model: {exc}") from exc
-
-def super_resolve(image: Image.Image) -> Image.Image:
-    """Run pretrained Swin2SR x2 super resolution."""
-    try:
-        import torch
-    except ImportError as exc:
-        raise RuntimeError("AI Super Resolution requires torch.") from exc
-    processor, model = _load_super_resolution_model()
-    try:
-        inputs = processor(images=image.convert("RGB"), return_tensors="pt")
-        with torch.no_grad():
-            output = model(**inputs).reconstruction
-        output = output.squeeze(0).clamp(0, 1).permute(1, 2, 0).cpu().numpy()
-        return Image.fromarray((output * 255).round().astype(np.uint8), mode="RGB")
-    except Exception as exc:
-        raise RuntimeError(f"Super-resolution inference failed: {exc}") from exc
-
-@lru_cache(maxsize=1)
-def _load_captioning_model():
-    """Lazily load the pretrained BLIP image-captioning model."""
-    try:
-        from transformers import BlipForConditionalGeneration, BlipProcessor
-    except ImportError as exc:
-        raise RuntimeError("AI Image Understanding requires torch and transformers.") from exc
-    model_id = "Salesforce/blip-image-captioning-base"
-    try:
-        return BlipProcessor.from_pretrained(model_id), BlipForConditionalGeneration.from_pretrained(model_id)
-    except Exception as exc:
-        raise RuntimeError(f"Could not load BLIP model: {exc}") from exc
-
-def generate_caption(image: Image.Image) -> str:
-    """Generate a short scene description with pretrained BLIP."""
-    try:
-        import torch
-        processor, model = _load_captioning_model()
-        inputs = processor(images=image.convert("RGB"), return_tensors="pt")
-        with torch.no_grad():
-            output = model.generate(**inputs, max_new_tokens=32)
-        return processor.decode(output[0], skip_special_tokens=True).strip()
-    except RuntimeError:
-        raise
-    except Exception as exc:
-        raise RuntimeError(f"AI image understanding failed: {exc}") from exc
-
-def classify_scene(caption: str) -> str:
-    """Classify a BLIP caption into a broad editing category with transparent rules."""
-    text = caption.lower()
-    keywords = {
-        "Portrait": ["person", "man", "woman", "child", "people", "face"],
-        "Landscape": ["mountain", "landscape", "beach", "lake", "sky", "forest", "field"],
-        "Indoor": ["room", "indoor", "kitchen", "office", "bedroom"],
-        "Outdoor": ["outdoor", "street", "park", "building", "road"],
-        "Document": ["document", "paper", "text", "book", "screen"],
-        "Food": ["food", "dish", "meal", "pizza", "cake", "fruit"],
-    }
-    return max(keywords, key=lambda category: sum(word in text for word in keywords[category]), default="General") if any(word in text for words in keywords.values() for word in words) else "General"
-
-def scene_recommendations(scene: str, image: Image.Image) -> list[str]:
-    """Generate deterministic editing advice from scene category and image metrics."""
-    metrics = _image_metrics(image)
-    recommendations = {
-        "Portrait": ["Enhance foreground subject", "Apply mild background blur", "Improve subject brightness"],
-        "Landscape": ["Improve local contrast", "Enhance color moderately", "Preserve overall sharpness"],
-        "Indoor": ["Lift shadows carefully", "Improve local contrast", "Preserve natural colors"],
-        "Outdoor": ["Balance highlights and shadows", "Improve local contrast", "Enhance color moderately"],
-        "Document": ["Improve contrast for readability", "Reduce noise", "Preserve edge sharpness"],
-        "Food": ["Enhance color moderately", "Improve local contrast", "Preserve fine detail"],
-        "General": ["Use mild contrast enhancement", "Check brightness before editing", "Preserve natural detail"],
-    }[scene].copy()
-    if metrics["brightness"] < 70:
-        recommendations.append("Brightness is low; apply a mild brightness correction")
-    if metrics["contrast"] < 38:
-        recommendations.append("Low contrast detected; CLAHE may help")
-    if metrics["sharpness"] < 90:
-        recommendations.append("Image appears soft; use mild sharpening")
-    return recommendations
 
